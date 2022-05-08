@@ -1,0 +1,405 @@
+#include <WiFi.h>
+#include <ESP32Servo.h>
+#include <Adafruit_NeoPixel.h>
+
+#define PIN 26
+
+Servo motorL;  // Motor ansteuerung definieren 
+Servo motorR;
+
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(37, PIN, NEO_GRB + NEO_KHZ800);
+
+//Variablen Ultraschall sensor 
+long duration;
+float distanceCm;
+long durationL;
+float distanceCmL;
+long durationR;
+float distanceCmR;
+
+const int trigPin = 12;
+const int echoPin = 14;
+const int trigPinL = 33;
+const int echoPinL = 32;
+const int trigPinR = 5;
+const int echoPinR = 4;
+
+// Servo GPIO pin
+static const int motorPinL = 27;
+static const int motorPinR = 13;
+
+//Variablen 
+long myTimer = 0;
+int gas = 0;      //input vom Webserver 
+int vgas = 0;     //umgerechneter Input
+int speedL = 0;   //Drehzahl Motor links
+int speedR = 0;   //Drehzahl motor Rechts 
+int x = 0;        //abstand in Abhängikeit der Geschwinndigkeit
+int xR = 0;       //abstand in Abhängikeit der Geschwinndigkeit rechts
+int xL = 0;       //abstand in Abhängikeit der Geschwinndigkeit links
+int p = 0;          //Neopixel variable
+int y = 0;          //Neopixel hilfsvariable
+
+// Network credentials
+const char* ssid     = "HIER KOMMT DEIN WLAN NAME HIN";
+const char* password = "HIER KOMMT DEIN WLAN PASSWORT HIN";
+ 
+// Web server on port 80 (http)
+WiFiServer server(80);
+ 
+// Variable to store the HTTP request
+String header;
+ 
+// Decode HTTP GET value
+String valueString = String(5);
+String valueString2 = String(5);
+int pos1 = 0;
+int pos2 = 0;
+int pos5 = 0;
+
+bool btnStartStop = 0; // 0 = Stop, 1 = Start
+ 
+// Current time
+unsigned long currentTime = millis();
+// Previous time
+unsigned long previousTime = 0; 
+// Define timeout time in milliseconds (example: 2000ms = 2s)
+const long timeoutTime = 2000;
+
+void setup() {
+
+  Serial.begin(115200);
+  
+  //motoren vor start ausschalten
+  motorL.write(speedL);
+  motorR.write(speedR);
+    
+  // LED Strip 
+  strip.begin();
+  strip.setBrightness(50);
+  strip.show(); // Initialize all pixels to 'off'
+
+  //Setup Ultraschall Sensoren
+  pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPin, INPUT); // Sets the echoPin as an Input
+  pinMode(trigPinL, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPinL, INPUT); // Sets the echoPin as an Input
+  pinMode(trigPinR, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPinR, INPUT); // Sets the echoPin as an Input
+  
+  // Allow allocation of all timers for servo library
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  
+  // Set servo PWM frequency to 50Hz
+  motorL.setPeriodHertz(50);
+  motorR.setPeriodHertz(50);
+  
+  // Attach to servo and define minimum and maximum positions
+  // Modify as required
+  motorL.attach(motorPinL,1000, 2000);
+  motorR.attach(motorPinR,1000, 2000);
+  
+  // Connect to Wi-Fi network with SSID and password
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  // Print local IP address and start web server
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+  
+  //LED Startup sequenz 
+  colorWipe(strip.Color(255, 0, 0), 50); // Red
+  colorWipe(strip.Color(0, 255, 0), 50); // Green
+  }
+
+void loop() {
+     // Abstandsmessung 
+  // Clears the trigPin
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH);
+  // Calculate the distance
+  distanceCm = duration * 0.034/2;
+
+  // Clears the trigPin
+  digitalWrite(trigPinL, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPinL, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPinL, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  durationL = pulseIn(echoPinL, HIGH);
+  // Calculate the distance
+  distanceCmL = durationL * 0.034/2;
+
+  // Clears the trigPin
+  digitalWrite(trigPinR, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPinR, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPinR, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  durationR = pulseIn(echoPinR, HIGH);
+  // Calculate the distance
+  distanceCmR = durationR * 0.034/2;
+
+  // Listen for incoming clients
+  WiFiClient client = server.available();   
+
+  //Test 
+  Serial.println("Client geschlossen");
+    
+  // Client Connected
+  if (client) {                             
+    // Set timer references
+    currentTime = millis();
+    previousTime = currentTime;
+    
+    // Print to serial port
+    Serial.println("New Client."); 
+    
+    // String to hold data from client
+    String currentLine = ""; 
+    
+    // Do while client is cponnected
+    while (client.connected() && currentTime - previousTime <= timeoutTime) { 
+      currentTime = millis();
+
+      //Test 
+      Serial.println("Cient läuft gerade");
+      
+      if (client.available()) {             // if there's bytes to read from the client,
+        char c = client.read();             // read a byte, then
+        Serial.write(c);                    // print it out the serial monitor
+        header += c;
+        if (c == '\n') {                    // if the byte is a newline character
+          // if the current line is blank, you got two newline characters in a row.
+          // that's the end of the client HTTP request, so send a response:
+          if (currentLine.length() == 0) {
+        
+            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK) and a content-type
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println("Connection: close");
+            client.println();
+ 
+            // Display the HTML web page
+            
+            // HTML Header
+            client.println("<!DOCTYPE html><html>");
+            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            
+            // CSS - Modify as desired
+
+            client.println("<style>body { text-align: center; font-family: \"Trebuchet MS\", Arial; margin-left:auto; margin-right:auto; }");
+            client.println(".slider { -webkit-appearance: none; margin: 15px; width: 400px; height: 25px; border-radius: 10px; background: #ffffff; outline: none;  opacity: 0.7;-webkit-transition: .2s;  transition: opacity .2s;}");
+            client.println(".btn{color: red; padding: 20px;background-color: white; font-size: 3em; border-radius: 20px; width: 200px;}");
+            client.println(".btn1{color: black; padding: 20px;background-color: white; font-size: 3em; width: 200px; border-radius: 20px;}");
+            client.println(".slider::-webkit-slider-thumb {-webkit-appearance: none; appearance: none; width: 35px; height: 35px; border-radius: 50%; background: #ff3410; cursor: pointer; }</style>");
+            
+            // Get JQuery
+            client.println("<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js\"></script>");
+                     
+            // Page title
+            client.println("</head><body style=\"background-color:#ff70f5;\"><h1 style=\"color:#ff3410;\">Speed and Power</h1>");
+            
+            // Position display
+            client.println("<h2 style=\"color:#ffffff;\">Position: <span id=\"servoPos\"></span>&#176;</h2>"); 
+
+            // buttons
+            client.println("<br><button onclick=\"btnStartStop(1)\" class=\"btn\"> Start </button>");
+            client.println("<button onclick=\"btnStartStop(0)\" class=\"btn\"> Stop </button>");
+            
+            // Slider control
+            client.println("<br><input type=\"range\" min=\"0\" max=\"180\" class=\"slider\" id=\"servoSlider\" onchange=\"servo(this.value)\" value=\""+valueString+"\"/>");
+            
+            // Javascript
+            client.println("<script>var slider = document.getElementById(\"servoSlider\");");
+            client.println("var servoP = document.getElementById(\"servoPos\"); servoP.innerHTML = slider.value;");
+            client.println("slider.oninput = function() { slider.value = this.value; servoP.innerHTML = this.value; }");
+            client.println("$.ajaxSetup({timeout:1000}); function servo(pos) { ");
+            client.println("$.get(\"/?value=\" + pos + \"&\"); {Connection: close};}</script>");
+
+            // Java Buttons 
+            client.println("<script>function btnStartStop(start) { ");
+            client.println("$.get(\"/?ss=\" + start + \"&\"); {Connection: close};}</script>");
+            
+            // End page
+            client.println("</body></html>");     
+            
+            // GET data
+            if(header.indexOf("GET /?value=")>=0) {
+              pos1 = header.indexOf('=');
+              pos2 = header.indexOf('&');
+              
+              // String with motor position
+              valueString = header.substring(pos1+1, pos2);
+              
+              // Move servo into position
+              gas = valueString.toInt();
+              
+              // Print value to serial monitor
+              Serial.print("Val =");
+              Serial.println(valueString); 
+            }
+
+              // GET start stop
+              if (header.indexOf("GET /?ss=") >= 0) 
+              {
+              pos5 = header.indexOf('=');
+
+              // String buttons Start Stop
+              valueString2 = header.substring(pos5 +1);
+              btnStartStop = valueString2.toInt();
+
+              // Print value to serial monitor
+              Serial.print("start stop =");
+              Serial.println(btnStartStop); // 0 = Stop, 1 = Start
+             }
+              
+            // The HTTP response ends with another blank line
+            client.println();
+            
+            // Break out of the while loop
+            break;
+          
+          } else { 
+            // New lline is received, clear currentLine
+            currentLine = "";
+          }
+        } else if (c != '\r') {  // if you got anything else but a carriage return character,
+          currentLine += c;      // add it to the end of the currentLine
+        }
+      }
+    }
+    //LED anzeige geschwindigkeit
+    y = int(gas/4.6);
+    while(p < y){
+      strip.setPixelColor(p, strip.Color(255, 0, 0));
+      strip.setPixelColor(p+1, strip.Color(0, 255, 0));
+      strip.show();
+      p = p+1; 
+    }
+    while(p > y){
+      strip.setPixelColor(p, strip.Color(255, 0, 0));
+      strip.setPixelColor(p+1, strip.Color(0, 255, 0));
+      strip.show();
+      p = p-1; 
+    }
+    
+    // Clear the header variable
+    header = "";
+    // Close the connection
+    client.stop();
+    Serial.println("Client disconnected.");
+    Serial.println("");
+  }
+  
+  //Fahrtsteuerungs Teil
+    vgas = int(gas / 2);              //drosselung der Geschwindigkeit um die Hälfte
+    x = int((distanceCm/(gas *0.66 +50))*100);    //Abstand in Abhänigkeit der Geschwindigkeit
+    xR = int((distanceCmR/(gas * 0.4 +20))*100);
+    xL = int((distanceCmL/(gas *0.4 +20))*100);  
+
+    if (x <= 100 || xR <= 100 || xL <= 100){
+      if (distanceCm <=35 || distanceCmR <= 20 || distanceCmL <= 20){
+        if(distanceCmR <= 20 && distanceCm <= 35 || distanceCmR <= 20){
+        speedL = 0;
+        speedR = vgas + 5;
+        }
+        if(distanceCmL <= 20 && distanceCm <= 35|| distanceCmL <= 20){
+          speedL = vgas +13 ;
+          speedR = 0;
+        }
+        else{
+          if(distanceCmL <= distanceCmR){
+            speedL = vgas +18;
+            speedR = 0;
+          }
+          if(distanceCmL > distanceCmR){
+            speedL = 0;
+            speedR = vgas +10 ;
+          }
+        }
+      }
+      else{
+        if(x <= 100 && xR <= 100 || xR <= 100){
+        speedL = 0;
+        speedR = vgas +5 ;
+        }
+        else if( x <= 100 && xL <= 100 || xL <= 100){
+          speedL = vgas +13;
+          speedR = 0;
+        }
+        else{
+          if(distanceCmL <= distanceCmR){
+            speedL = vgas +18;
+            speedR = 0;
+          }
+          if(distanceCmL > distanceCmR){
+            speedL = 0;
+            speedR = vgas + 10;
+          }
+        }
+      }
+    }
+    else{
+      speedL = vgas + 8; 
+      speedR = vgas; 
+    }
+    
+    if (btnStartStop == 1){
+      motorL.write(speedL);
+      motorR.write(speedR);
+    }  
+
+    if (btnStartStop == 0){
+      motorL.write(0);
+      motorR.write(0);
+    }
+    
+    //Testsequenz anzeigen Serieller Monitor
+    Serial.print("Start Stop");
+    Serial.println(btnStartStop);
+    Serial.print("Gas: ");
+    Serial.println(gas);
+    Serial.print("distanceCmL: ");
+    Serial.println((distanceCmL));
+    Serial.print("distanceCm: ");
+    Serial.println((distanceCm));
+    Serial.print("distanceCmR: ");
+    Serial.println((distanceCmR));
+    Serial.print("speedL: ");
+    Serial.println((speedL));
+    Serial.print("speedR: ");
+    Serial.println((speedR));
+    Serial.println(millis());
+  
+}
+
+// Fill the dots one after the other with a color
+void colorWipe(uint32_t c, uint8_t wait) {
+  for(uint16_t i=0; i<strip.numPixels(); i++) {
+    strip.setPixelColor(i, c);
+    strip.show();
+    delay(wait);
+  }
+}
